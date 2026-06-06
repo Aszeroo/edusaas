@@ -40,6 +40,7 @@ VITE_FIREBASE_STORAGE_BUCKET=your_storage_bucket
 VITE_FIREBASE_MESSAGING_SENDER_ID=your_messaging_sender_id
 VITE_FIREBASE_APP_ID=your_app_id
 
+
 ## โครงสร้างโฟลเดอร์และการจัดเก็บโค้ด (Project Directory Structure)
 
 ├── public/                 # ไฟล์ Static ทั่วไปของระบบ
