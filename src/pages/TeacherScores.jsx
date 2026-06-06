@@ -16,8 +16,13 @@ export default function TeacherScores() {
 
   const [selectedSubject, setSelectedSubject] = useState('');
   const [selectedClass, setSelectedClass] = useState('');
-  const [activeTab, setActiveTab] = useState('ASSIGNMENTS');
+  const [activeTab, setActiveTab] = useState('ASSIGNMENTS'); // 'ASSIGNMENTS' | 'FINAL'
 
+  // 🌟 State สำหรับแท็บ "ให้คะแนนใบงาน"
+  const [selectedAssignment, setSelectedAssignment] = useState('');
+  const [assignmentInput, setAssignmentInput] = useState({});
+
+  // State สำหรับแท็บ "สรุปคะแนน" (พฤติกรรม, ปฏิบัติ, ทฤษฎี, แบบฝึกหัด, ทดสอบ)
   const [finalInput, setFinalInput] = useState({});
   const [alertData, setAlertData] = useState({ isOpen: false, title: '', message: '' });
 
@@ -28,14 +33,12 @@ export default function TeacherScores() {
     const unsubAsn = onSnapshot(collection(db, 'assignments'), snap => setAssignments(snap.docs.map(d => ({id: d.id, ...d.data()}))));
     const unsubSc = onSnapshot(collection(db, 'scores'), snap => setScores(snap.docs.map(d => ({id: d.id, ...d.data()}))));
     const unsubAtt = onSnapshot(collection(db, 'attendance'), snap => setAttendance(snap.docs.map(d => ({id: d.id, ...d.data()}))));
-    
-    const unsubFinal = onSnapshot(collection(db, 'final_scores'), snap => {
-      setFinalScoresDb(snap.docs.map(d => ({id: d.id, ...d.data()})));
-    });
+    const unsubFinal = onSnapshot(collection(db, 'final_scores'), snap => setFinalScoresDb(snap.docs.map(d => ({id: d.id, ...d.data()}))));
 
     return () => { unsubSub(); unsubClass(); unsubStd(); unsubAsn(); unsubSc(); unsubAtt(); unsubFinal(); };
   }, []);
 
+  // เมื่อเปลี่ยนวิชา/ห้อง ให้ดึงคะแนนเก่าของแท็บ "สรุปคะแนน" มาใส่ช่อง Input
   useEffect(() => {
     if (selectedSubject && selectedClass) {
       const inputs = {};
@@ -54,9 +57,25 @@ export default function TeacherScores() {
     }
   }, [selectedSubject, selectedClass, finalScoresDb]);
 
+  // 🌟 เมื่อเปลี่ยนใบงาน ให้ดึงคะแนนเดิมมาแสดงในช่องกรอก
+  useEffect(() => {
+    if (selectedAssignment) {
+      const inputs = {};
+      scores.forEach(sc => {
+        if (sc.assignmentId === selectedAssignment) {
+          inputs[sc.studentId] = sc.score;
+        }
+      });
+      setAssignmentInput(inputs);
+    } else {
+      setAssignmentInput({});
+    }
+  }, [selectedAssignment, scores]);
+
   const classStds = students.filter(s => s.classroomId === selectedClass).sort((a,b)=>Number(a.number)-Number(b.number));
   const classAsn = assignments.filter(a => a.subjectId === selectedSubject && (a.classrooms || []).includes(selectedClass));
 
+  // ฟังก์ชันคำนวณคะแนนใบงานรวม
   const getAssignmentScore30 = (studentId) => {
     if (classAsn.length === 0) return 0;
     let totalMax = 0;
@@ -70,14 +89,13 @@ export default function TeacherScores() {
     return Math.round((totalGot / totalMax) * 30);
   };
 
-// ฟังก์ชันคำนวณคะแนนมาเรียน (เต็ม 10)
+  // ฟังก์ชันคำนวณคะแนนมาเรียน
   const getAttendanceScore10 = (studentId) => {
     const stdAtt = attendance.filter(a => a.subjectId === selectedSubject && a.classroomId === selectedClass);
     if (stdAtt.length === 0) return 0;
     
-    // 🌟 อัปเดตสูตรใหม่: ให้นับรวมทั้ง "วันที่" และ "รอบที่" เป็น 1 ครั้ง (session)
-    const uniqueSessions = new Set(stdAtt.map(a => `${a.date}_${a.period || '1'}`)).size;
-    if (uniqueSessions === 0) return 0;
+    const uniqueDates = new Set(stdAtt.map(a => a.date)).size;
+    if (uniqueDates === 0) return 0;
 
     const myAtt = stdAtt.filter(a => a.studentId === studentId);
     let score = 0;
@@ -86,8 +104,34 @@ export default function TeacherScores() {
       else if (a.status === 'late') score += 0.5;
     });
 
-    // 🌟 นำคะแนนมาหารด้วยจำนวน session ทั้งหมดที่ครูเคยเช็คไป แล้วคูณ 10
-    return Math.round((score / uniqueSessions) * 10);
+    return Math.round((score / uniqueDates) * 10);
+  };
+
+  // 🌟 ฟังก์ชันจัดการการพิมพ์คะแนนใบงาน
+  const handleAssignmentScoreChange = (studentId, value) => {
+    const val = value === '' ? '' : Number(value);
+    setAssignmentInput(prev => ({ ...prev, [studentId]: val }));
+  };
+
+  // 🌟 ฟังก์ชันบันทึกคะแนนใบงานรายชิ้น
+  const handleSaveAssignmentScores = async () => {
+    try {
+      for (const studentId of Object.keys(assignmentInput)) {
+        const scoreVal = assignmentInput[studentId];
+        if (scoreVal === '' || scoreVal === null) continue;
+
+        const docId = `${selectedAssignment}_${studentId}`;
+        await setDoc(doc(db, 'scores', docId), {
+          assignmentId: selectedAssignment,
+          studentId: studentId,
+          score: Number(scoreVal),
+          updatedAt: new Date().toISOString()
+        });
+      }
+      setAlertData({ isOpen: true, title: 'สำเร็จ', message: 'บันทึกคะแนนของใบงานนี้เรียบร้อยแล้ว!' });
+    } catch (error) {
+      setAlertData({ isOpen: true, title: 'เกิดข้อผิดพลาด', message: error.message });
+    }
   };
 
   const handleFinalInputChange = (studentId, field, value) => {
@@ -101,6 +145,7 @@ export default function TeacherScores() {
     }));
   };
 
+  // บันทึกคะแนนลงตาราง final_scores (ตัดเกรด 100 แต้ม)
   const handleSaveFinalScores = async () => {
     try {
       for (const s of classStds) {
@@ -211,8 +256,68 @@ export default function TeacherScores() {
         )}
       </Card>
 
+      {/* 🌟 1. แท็บให้คะแนนใบงานรายชิ้น (นำกลับมาแล้ว) 🌟 */}
+      {selectedSubject && selectedClass && activeTab === 'ASSIGNMENTS' && (
+        <Card className="print:hidden">
+          <div className="mb-6 max-w-sm">
+            <Select 
+              label="เลือกใบงานที่จะตรวจ" 
+              options={classAsn.map(a => ({label: `${a.title} (เต็ม ${a.maxScore})`, value: a.id}))} 
+              value={selectedAssignment} 
+              onChange={e => setSelectedAssignment(e.target.value)} 
+            />
+          </div>
+
+          {selectedAssignment ? (
+            <div className="overflow-x-auto border border-slate-200 dark:border-slate-700 rounded-xl">
+              <table className="w-full text-left text-sm whitespace-nowrap">
+                <thead className="bg-slate-50 dark:bg-slate-800/50 text-slate-600 dark:text-slate-300">
+                  <tr>
+                    <th className="p-3 border-b border-slate-200 dark:border-slate-700 w-20 text-center">เลขที่</th>
+                    <th className="p-3 border-b border-slate-200 dark:border-slate-700">ชื่อ-นามสกุล</th>
+                    <th className="p-3 border-b border-slate-200 dark:border-slate-700 w-48 text-center text-indigo-600">
+                      คะแนนที่ได้ (เต็ม {classAsn.find(a => a.id === selectedAssignment)?.maxScore || 0})
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                  {classStds.map(s => (
+                    <tr key={s.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/20">
+                      <td className="p-3 font-bold dark:text-slate-300 text-center">{s.number}</td>
+                      <td className="p-3 dark:text-white font-medium">{s.prefix || ''}{s.firstName} {s.lastName}</td>
+                      <td className="p-2">
+                        <input 
+                          type="number" 
+                          min="0" 
+                          max={classAsn.find(a => a.id === selectedAssignment)?.maxScore || 100}
+                          value={assignmentInput[s.id] ?? ''} 
+                          onChange={e => handleAssignmentScoreChange(s.id, e.target.value)} 
+                          className="w-full p-2 text-center font-bold text-indigo-600 bg-indigo-50/50 border border-indigo-100 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none dark:bg-slate-900 dark:border-slate-700 dark:text-indigo-400" 
+                          placeholder="-"
+                        />
+                      </td>
+                    </tr>
+                  ))}
+                  {classStds.length === 0 && <tr><td colSpan="3" className="text-center py-10 text-slate-400">ยังไม่มีนักเรียนในห้องนี้</td></tr>}
+                </tbody>
+              </table>
+              <div className="p-4 bg-slate-50 dark:bg-slate-800 border-t border-slate-200 dark:border-slate-700 flex justify-end">
+                <Button onClick={handleSaveAssignmentScores} className="bg-indigo-600 hover:bg-indigo-700 shadow-md">
+                  บันทึกคะแนนใบงานนี้
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <div className="text-center py-16 text-slate-400 font-medium bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-dashed border-slate-300 dark:border-slate-700">
+              กรุณาเลือกใบงานที่ต้องการตรวจคะแนนจากด้านบน
+            </div>
+          )}
+        </Card>
+      )}
+
+      {/* 🌟 2. แท็บสรุปคะแนนตัดเกรด (100 คะแนน) และส่วน Print PDF 🌟 */}
       {selectedSubject && selectedClass && activeTab === 'FINAL' && (
-        <Card className="print:shadow-none print:border-none print:p-0 print:m-0 print:bg-transparent">
+        <Card id="print-container" className="print:shadow-none print:border-none print:p-0 print:m-0 print:bg-transparent">
           <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4 print:hidden">
              <div>
                <h2 className="text-xl font-bold text-indigo-800 dark:text-indigo-400 flex items-center">

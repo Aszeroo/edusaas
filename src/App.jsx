@@ -2,8 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Moon, Sun, Menu, KeyRound } from 'lucide-react';
 import { auth, db } from './context/firebase';
 import { onAuthStateChanged, signOut, updatePassword, signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'firebase/auth';
-// 🌟 อัปเดตบรรทัดนี้: เพิ่มคำสั่งคิวรี และ อัปเดตเอกสารข้อมูล
-import { doc, getDoc, setDoc, collection, query, where, getDocs, updateDoc } from 'firebase/firestore';
+import { doc, getDoc, setDoc, collection, query, getDocs, updateDoc } from 'firebase/firestore';
 import { Card, Button, Input, Modal, AlertModal } from './components/UI';
 
 import StudentManagement from './pages/StudentManagement';
@@ -34,6 +33,7 @@ export default function App() {
     else document.documentElement.classList.remove('dark');
   }, [isDarkMode]);
 
+  // ระบบตรวจสอบสถานะการล็อกอิน
   useEffect(() => {
     return onAuthStateChanged(auth, async (currentUser) => {
       setUser(currentUser);
@@ -51,28 +51,50 @@ export default function App() {
     });
   }, []);
 
-  // 🌟 ฟังก์ชันเปลี่ยนรหัสผ่าน (เพิ่มระบบซิงค์หาตารางครูอัตโนมัติ)
+  // 🌟 ฟีเจอร์ใหม่: ระบบ Auto-Logout 10 นาที
+  useEffect(() => {
+    // ทำงานเฉพาะตอนที่มีคนล็อกอินเข้าสู่ระบบแล้วเท่านั้น
+    if (!user) return;
+
+    let timeoutId;
+
+    const resetTimer = () => {
+      if (timeoutId) clearTimeout(timeoutId);
+      // ตั้งเวลา 10 นาที (10 * 60 วินาที * 1000 มิลลิวินาที = 600000)
+      timeoutId = setTimeout(() => {
+        // เมื่อครบเวลา 10 นาทีโดยไม่มีการขยับ ให้สั่งออกจากระบบทันที
+        signOut(auth).then(() => {
+          setAlertData({ 
+            isOpen: true, 
+            title: 'หมดเวลาการเชื่อมต่อ', 
+            message: 'คุณไม่ได้ทำรายการใดๆ เป็นเวลา 5 นาที ระบบได้นำคุณออกจากระบบอัตโนมัติเพื่อความปลอดภัยครับ' 
+          });
+        });
+      }, 300000); 
+    };
+
+    // เหตุการณ์ที่จะใช้รีเซ็ตเวลา (ขยับเมาส์, กดปุ่ม, คลิก, เลื่อนหน้าจอ, สัมผัสจอ)
+    const events = ['mousemove', 'keydown', 'mousedown', 'touchstart', 'scroll'];
+    
+    // ผูก Event Listeners ทันทีที่ล็อกอิน
+    events.forEach(event => window.addEventListener(event, resetTimer));
+
+    // เริ่มนับเวลาครั้งแรก
+    resetTimer();
+
+    // ล้างค่าเวลาและ Event เมื่อปิดแอปหรือล็อกเอาท์
+    return () => {
+      if (timeoutId) clearTimeout(timeoutId);
+      events.forEach(event => window.removeEventListener(event, resetTimer));
+    };
+  }, [user]); // ใส่ [user] เพื่อให้ทำงานใหม่ทุกครั้งที่มีการเข้า/ออกระบบ
+
   const handleChangePassword = async (e) => {
     e.preventDefault();
     if(newPassword.length < 6) return setAlertData({isOpen:true, title:'แจ้งเตือน', message:'รหัสผ่านต้องมีอย่างน้อย 6 ตัวอักษร'});
     try {
-      // 1. เปลี่ยนรหัสผ่านในระบบรักษาความปลอดภัยหลักของ Firebase
       await updatePassword(auth.currentUser, newPassword);
-      
-      // 2. ⚡ ระบบซิงค์ข้อมูล: ตรวจสอบว่าเป็นนักเรียนหรือไม่ ถ้าใช่ ให้บันทึกรหัสใหม่ลง Firestore ของครูด้วย
-      if (userProfile && userProfile.role === 'student') {
-        const qStudent = query(collection(db, 'students'), where('email', '==', auth.currentUser.email.toLowerCase()));
-        const querySnapshot = await getDocs(qStudent);
-        
-        if (!querySnapshot.empty) {
-          // หากเจอนักเรียนที่มีอีเมลตรงกันในระบบ ให้บันทึกรหัสผ่านใหม่ลงไปทันที
-          await updateDoc(doc(db, 'students', querySnapshot.docs[0].id), {
-            password: newPassword
-          });
-        }
-      }
-
-      setAlertData({isOpen:true, title:'สำเร็จ', message:'เปลี่ยนรหัสผ่านสำเร็จ และบันทึกข้อมูลเรียบร้อยแล้ว!'});
+      setAlertData({isOpen:true, title:'สำเร็จ', message:'เปลี่ยนรหัสผ่านสำเร็จ!'});
       setNewPassword(''); setIsProfileOpen(false);
     } catch (error) { 
       setAlertData({isOpen:true, title:'ข้อผิดพลาด', message:'อาจต้องล็อกอินใหม่เพื่อความปลอดภัย: ' + error.message}); 
@@ -168,8 +190,14 @@ function AuthScreen({ setIsDarkMode, isDarkMode }) {
             const s = documentSnap.data();
             const dbFName = (s.firstName || '').trim();
             const dbLName = (s.lastName || '').trim();
+            
+            const prefixRegex = /^(นาย|นางสาว|นาง|เด็กชาย|เด็กหญิง|ด\.ช\.|ด\.ญ\.)\s*/;
+            const dbFNameNoPrefix = dbFName.replace(prefixRegex, '').trim();
 
-            if (dbFName === cleanFirstName && dbLName === cleanLastName) {
+            if (
+              (dbFName === cleanFirstName && dbLName === cleanLastName) ||
+              (dbFNameNoPrefix === cleanFirstName && dbLName === cleanLastName)
+            ) {
               if (!s.email || s.email.trim() === '') {
                 matchedDocId = documentSnap.id;
               }
@@ -184,7 +212,7 @@ function AuthScreen({ setIsDarkMode, isDarkMode }) {
             window.alert('✅ ลงทะเบียนสำเร็จ และระบบได้เชื่อมโยงข้อมูลรายวิชาของคุณเรียบร้อยแล้ว!');
             window.location.reload(); 
           } else {
-            window.alert('⚠️ ลงทะเบียนสำเร็จ!\nแต่ระบบไม่พบชื่อของคุณในฐานข้อมูลห้องเรียน (หรืออาจมีบัญชีนี้ในระบบแล้ว)\n\nกรุณาแจ้งคุณครูเพื่อผูกบัญชีให้ครับ');
+            window.alert('⚠️ ลงทะเบียนสำเร็จ!\nแต่ระบบไม่พบชื่อของคุณในฐานข้อมูลห้องเรียน (หรืออาจสะกดไม่ตรงกัน)\n\nกรุณาแจ้งคุณครูเพื่อเพิ่มอีเมลเข้าระบบให้ครับ');
             window.location.reload();
           }
         }
@@ -200,6 +228,7 @@ function AuthScreen({ setIsDarkMode, isDarkMode }) {
       <Card className="w-full max-w-[450px] p-8 border-none shadow-xl">
         <h2 className="text-3xl font-extrabold text-slate-900 dark:text-white text-center mb-6">EduSaaS</h2>
         <form onSubmit={handleAuth} className="space-y-4">
+          
           {!isLogin && (
             <div className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
@@ -207,10 +236,11 @@ function AuthScreen({ setIsDarkMode, isDarkMode }) {
                 <Input label="นามสกุล" value={lastName} onChange={e=>setLastName(e.target.value)} placeholder="เช่น ใจดี" required />
               </div>
               <p className="text-[11px] text-slate-400 -mt-2 leading-tight">
-                * กรอกชื่อและนามสกุลให้ตรงกับในระบบ (ไม่ต้องใส่คำนำหน้า) เพื่อให้ระบบเชื่อมบัญชีให้อัตโนมัติ
+                * กรอกชื่อและนามสกุลให้ตรงกับในระบบ (ไม่ต้องใส่คำนำหน้า) เพื่อให้ระบบดึงตารางเรียนให้อัตโนมัติ
               </p>
             </div>
           )}
+
           <Input label="อีเมล" type="email" value={email} onChange={e=>setEmail(e.target.value)} required />
           <Input label="รหัสผ่าน" type="password" value={password} onChange={e=>setPassword(e.target.value)} isPasswordToggle required />
           <Button type="submit" className="w-full mt-4">{isLogin ? 'เข้าสู่ระบบ' : 'สมัครสมาชิก'}</Button>
